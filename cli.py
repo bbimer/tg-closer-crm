@@ -58,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     harvest_p.add_argument("--chat", required=True, help="Telegram group username, link or ID")
     harvest_p.add_argument("--limit", type=int, default=300, help="Total messages to dump")
     harvest_p.add_argument("--batch", type=int, default=100, help="Batch size per request")
+    harvest_p.add_argument("--offset-id", type=int, default=0, help="Offset message ID to start pagination from")
 
     # Command: mine-pains
     mine_p = subparsers.add_parser("mine-pains", help="Mine pain points and trading frustrations from chat dumps")
@@ -80,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     # Command: export-lead (handoff to syndicate-kb-responder)
     exp_p = subparsers.add_parser("export-lead", help="Export lead context JSON for syndicate-kb-responder")
     exp_p.add_argument("--lead", type=int, required=True, help="User ID of the lead")
+
+    # Command: export-thread (handoff active dispute thread to syndicate-kb-responder)
+    exp_thread_p = subparsers.add_parser("export-thread", help="Export active thread chain and chat slang for syndicate-kb-responder")
+    exp_thread_p.add_argument("--chat", required=True, help="Chat ID or username")
+    exp_thread_p.add_argument("--msg", type=int, required=True, help="Root or reply message ID")
+    exp_thread_p.add_argument("--max-msgs", type=int, default=6, help="Maximum messages in thread chain (default: 6)")
 
     # Command: import-audits
     imp_p = subparsers.add_parser("import-audits", help="Import scored channels from audits.db")
@@ -165,6 +172,7 @@ async def main_async() -> None:
                 chat_identifier=args.chat,
                 total_limit=args.limit,
                 batch_size=args.batch,
+                start_offset_id=args.offset_id,
             )
             console.print("[bold green]Harvesting completed successfully![/bold green]")
             console.print(result)
@@ -250,6 +258,13 @@ async def main_async() -> None:
             "history": json.loads(dialogue.history_json) if dialogue and dialogue.history_json else [],
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    elif args.command == "export-thread":
+        thread_data = await repo.get_thread_messages(args.chat, args.msg, max_messages=args.max_msgs)
+        top_slang = await repo.get_chat_top_slang(args.chat, limit=15)
+        thread_data["top_slang"] = top_slang
+        import json
+        print(json.dumps(thread_data, ensure_ascii=False, indent=2))
 
     elif args.command == "import-audits":
         from pathlib import Path

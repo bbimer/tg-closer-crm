@@ -129,6 +129,18 @@ async def test_group_messages_crud(temp_repo):
     assert threads[0]["reply_count"] == 3
     assert "TIA" in threads[0]["tickers"] or "BTC" in threads[0]["tickers"]
 
+    # Test get_thread_messages ladder
+    exported_thread = await temp_repo.get_thread_messages("chat_tree", 103, max_messages=5)
+    assert exported_thread["thread_root_id"] == 100
+    assert exported_thread["target_msg_id"] == 103
+    assert len(exported_thread["messages"]) == 4
+    assert exported_thread["messages"][0]["msg_id"] == 100
+    assert exported_thread["messages"][-1]["msg_id"] == 103
+
+    # Test slang extraction
+    slang = await temp_repo.get_chat_top_slang("chat_tree")
+    assert isinstance(slang, list)
+
 
 @pytest.mark.asyncio
 async def test_crm_dialogues_lifecycle(temp_repo):

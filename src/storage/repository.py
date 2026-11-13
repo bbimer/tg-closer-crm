@@ -314,6 +314,169 @@ class Repository:
     ) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self._sync_get_active_users, chat_id, limit)
 
+    def _sync_get_thread_messages(
+        self, chat_id: str, msg_id: int, max_messages: int = 6
+    ) -> Dict[str, Any]:
+        """
+        Fetches an active discussion thread around msg_id.
+        Walks up reply_to_msg_id to find the root message, then finds replies
+        in the thread chain, returning 3 to 6 messages in chronological order.
+        """
+        with self._get_connection() as conn:
+            target = conn.execute(
+                """
+                SELECT message_id, sender_id, sender_username, sender_name, text, reply_to_msg_id, date, chat_id
+                FROM group_messages
+                WHERE (chat_id = ? OR chat_id = ? OR chat_id LIKE ?) AND message_id = ?
+                """,
+                (chat_id, str(chat_id).lstrip("-100"), f"%{chat_id}%", msg_id)
+            ).fetchone()
+
+            if not target:
+                target = conn.execute(
+                    """
+                    SELECT message_id, sender_id, sender_username, sender_name, text, reply_to_msg_id, date, chat_id
+                    FROM group_messages
+                    WHERE message_id = ?
+                    """,
+                    (msg_id,)
+                ).fetchone()
+
+            if not target:
+                return {"chat_id": chat_id, "thread_root_id": msg_id, "target_msg_id": msg_id, "messages": []}
+
+            resolved_chat_id = target["chat_id"]
+
+            # Walk up reply_to_msg_id to find root
+            curr_id = msg_id
+            visited = set()
+            root_id = msg_id
+
+            while curr_id and curr_id not in visited:
+                visited.add(curr_id)
+                row = conn.execute(
+                    "SELECT message_id, reply_to_msg_id FROM group_messages WHERE chat_id = ? AND message_id = ?",
+                    (resolved_chat_id, curr_id)
+                ).fetchone()
+                if not row:
+                    break
+                root_id = row["message_id"]
+                if row["reply_to_msg_id"]:
+                    curr_id = row["reply_to_msg_id"]
+                else:
+                    break
+
+            # Fetch messages around thread
+            rows = conn.execute(
+                """
+                SELECT message_id, sender_id, sender_username, sender_name, text, reply_to_msg_id, date
+                FROM group_messages
+                WHERE chat_id = ? AND message_id >= ? AND message_id <= ?
+                ORDER BY message_id ASC
+                """,
+                (resolved_chat_id, root_id, max(msg_id, root_id) + 400)
+            ).fetchall()
+
+            thread_msg_map = {r["message_id"]: dict(r) for r in rows}
+            thread_ids = {root_id}
+
+            added = True
+            while added:
+                added = False
+                for mid, m in thread_msg_map.items():
+                    if mid not in thread_ids and m["reply_to_msg_id"] in thread_ids:
+                        thread_ids.add(mid)
+                        added = True
+
+            if msg_id in thread_msg_map:
+                thread_ids.add(msg_id)
+
+            thread_list = [thread_msg_map[mid] for mid in sorted(thread_ids) if mid in thread_msg_map]
+
+            if len(thread_list) > max_messages:
+                root_m = thread_list[0]
+                tail = thread_list[-(max_messages - 1):]
+                if root_m not in tail:
+                    selected = [root_m] + tail
+                else:
+                    selected = thread_list[-max_messages:]
+            else:
+                selected = thread_list
+
+            formatted_messages = []
+            for m in selected:
+                author = (
+                    f"@{m['sender_username']}" if m.get("sender_username")
+                    else (m.get("sender_name") or f"User_{m.get('sender_id')}")
+                )
+                formatted_messages.append({
+                    "msg_id": m["message_id"],
+                    "author": author,
+                    "text": m["text"] or "",
+                    "date": str(m["date"]),
+                    "reply_to_msg_id": m.get("reply_to_msg_id")
+                })
+
+            return {
+                "chat_id": resolved_chat_id,
+                "thread_root_id": root_id,
+                "target_msg_id": msg_id,
+                "messages": formatted_messages
+            }
+
+    async def get_thread_messages(
+        self, chat_id: str, msg_id: int, max_messages: int = 6
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(self._sync_get_thread_messages, chat_id, msg_id, max_messages)
+
+    def _sync_get_chat_top_slang(self, chat_id: str, limit: int = 15) -> List[str]:
+        """
+        Extracts top crypto/trading slang terms for a specific chat.
+        """
+        from src.intel.chat_harvester import ChatHarvester
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, sender_id, sender_username, sender_name, text, reply_to_msg_id, date, chat_id
+                FROM group_messages
+                WHERE chat_id = ? OR chat_id = ? OR chat_id LIKE ?
+                ORDER BY message_id DESC
+                LIMIT 500
+                """,
+                (chat_id, str(chat_id).lstrip("-100"), f"%{chat_id}%")
+            ).fetchall()
+
+            if not rows:
+                return []
+
+            msgs = []
+            for r in rows:
+                d = r["date"]
+                if isinstance(d, str):
+                    try:
+                        d = datetime.fromisoformat(d)
+                    except ValueError:
+                        d = datetime.utcnow()
+                msgs.append(
+                    GroupMessage(
+                        message_id=r["message_id"],
+                        chat_id=r["chat_id"],
+                        sender_id=r["sender_id"],
+                        sender_username=r["sender_username"],
+                        sender_name=r["sender_name"],
+                        text=r["text"] or "",
+                        date=d or datetime.utcnow(),
+                        reply_to_msg_id=r["reply_to_msg_id"]
+                    )
+                )
+            slang_counts = ChatHarvester.extract_slang(msgs)
+            return [word for word, _ in slang_counts[:limit]]
+
+    async def get_chat_top_slang(
+        self, chat_id: str, limit: int = 15
+    ) -> List[str]:
+        return await asyncio.to_thread(self._sync_get_chat_top_slang, chat_id, limit)
+
     # -------------------------------------------------------------------------
     # Leads / Pain Prospects
     # -------------------------------------------------------------------------
