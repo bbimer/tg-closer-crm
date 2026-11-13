@@ -23,8 +23,11 @@ class Settings:
     telegram_sessions_dir: Path = Path(
         os.getenv("TELEGRAM_SESSIONS_DIR", str(BASE_DIR / "sessions"))
     )
-    crm_db_path: Path = Path(
-        os.getenv("CRM_DB_PATH", str(BASE_DIR / "data" / "crm.db"))
+    raw_crm_path = os.getenv("CRM_DB_PATH", "data/crm.db")
+    crm_db_path: Path = (
+        (BASE_DIR / raw_crm_path).resolve()
+        if not Path(raw_crm_path).is_absolute()
+        else Path(raw_crm_path)
     )
 
     # LLM Settings
